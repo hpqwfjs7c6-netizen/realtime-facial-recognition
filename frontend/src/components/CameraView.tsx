@@ -65,6 +65,7 @@ export default function CameraView({
           audio={false}
           screenshotFormat="image/jpeg"
           screenshotQuality={0.7}
+          forceScreenshotSourceSize
           videoConstraints={{ facingMode: "user", width: 1280, height: 720 }}
           onLoadedData={onVideoLoad}
           className="h-full w-full object-cover"
