@@ -1,15 +1,30 @@
 @import "tailwindcss";
 
+/* Design tokens — Dark OLED (ui-ux-pro-max: security monitoring dashboard) */
 @theme {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-bg: #0b1120;
+  --color-surface: #111827;
+  --color-surface-2: #1e293b;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-foreground: #f8fafc;
+  --color-muted: #94a3b8;
+
+  --color-primary: #d97706;
+  --color-accent: #6366f1;
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-foreground);
 }
 
 @layer utilities {
   .animate-spin-slow {
     animation: spin 3s linear infinite;
   }
-  
   .custom-scrollbar::-webkit-scrollbar {
     width: 6px;
   }
@@ -22,5 +37,16 @@
   }
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
     background: #475569;
+  }
+}
+
+/* Respecter prefers-reduced-motion (a11y) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
