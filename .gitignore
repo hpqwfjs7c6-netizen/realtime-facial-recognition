@@ -1,10 +1,13 @@
 # Python / Backend
 venv/
+.venv/
 __pycache__/
 *.pyc
 .env
 temp_capture.jpg
 reference.jpg
+backend/data/
+.pytest_cache/
 
 # Next.js / Frontend
 node_modules/
