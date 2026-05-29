@@ -66,6 +66,7 @@ export default function CameraView({
           screenshotFormat="image/jpeg"
           screenshotQuality={0.7}
           forceScreenshotSourceSize
+          mirrored
           videoConstraints={{ facingMode: "user", width: 1280, height: 720 }}
           onLoadedData={onVideoLoad}
           className="h-full w-full object-cover"
