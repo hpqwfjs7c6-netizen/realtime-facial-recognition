@@ -1,0 +1,19 @@
+# Python / Backend
+venv/
+__pycache__/
+*.pyc
+.env
+temp_capture.jpg
+reference.jpg
+
+# Next.js / Frontend
+node_modules/
+.next/
+out/
+build/
+.DS_Store
+*.pem
+
+# IDEs
+.vscode/
+.idea/
