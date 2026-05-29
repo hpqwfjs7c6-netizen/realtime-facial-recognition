@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Webcam from "react-webcam";
 import { Camera, ShieldAlert } from "lucide-react";
 import type { FaceData } from "@/lib/types";
@@ -20,9 +20,46 @@ export default function CameraView({
   onVideoLoad,
   isAnalyzing,
 }: Props) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ width: 0, height: 0 });
+
+  // Mesure la taille rendue du conteneur (pour mapper correctement object-cover).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () =>
+      setBox({ width: el.clientWidth, height: el.clientHeight });
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Conversion d'un rectangle (en pixels vidéo intrinsèques) vers les pixels
+  // affichés, en compensant le rognage object-cover (échelle + recentrage).
+  const mapRect = (r: FaceData["faceRectangle"]) => {
+    const vw = cameraSize.width;
+    const vh = cameraSize.height;
+    const cw = box.width;
+    const ch = box.height;
+    if (!vw || !vh || !cw || !ch) return null;
+    const scale = Math.max(cw / vw, ch / vh);
+    const offsetX = (vw * scale - cw) / 2;
+    const offsetY = (vh * scale - ch) / 2;
+    return {
+      left: r.left * scale - offsetX,
+      top: r.top * scale - offsetY,
+      width: r.width * scale,
+      height: r.height * scale,
+    };
+  };
+
   return (
     <section className="flex flex-col gap-4" aria-label="Flux caméra">
-      <div className="relative aspect-video overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-2xl">
+      <div
+        ref={containerRef}
+        className="relative aspect-video overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-2xl"
+      >
         <Webcam
           ref={webcamRef}
           audio={false}
@@ -34,45 +71,41 @@ export default function CameraView({
           aria-label="Flux vidéo en direct de la webcam"
         />
 
-        {cameraSize.width > 0 &&
-          faces.map((face, index) => {
-            const r = face.faceRectangle;
-            const left = (r.left / cameraSize.width) * 100;
-            const top = (r.top / cameraSize.height) * 100;
-            const width = (r.width / cameraSize.width) * 100;
-            const height = (r.height / cameraSize.height) * 100;
-            const border = face.recognized
-              ? "border-emerald-400"
-              : "border-rose-500";
-            const shadow = face.recognized
-              ? "shadow-[0_0_15px_rgba(16,185,129,0.5)]"
-              : "shadow-[0_0_15px_rgba(239,68,68,0.5)]";
-            return (
-              <div
-                key={`face-${index}`}
-                className={`absolute rounded-lg border-2 transition-all duration-300 ${border} ${shadow}`}
-                style={{
-                  left: `${left}%`,
-                  top: `${top}%`,
-                  width: `${width}%`,
-                  height: `${height}%`,
-                }}
-              >
-                <div className="absolute left-1/2 top-[-35px] flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-[var(--color-border)] bg-slate-900/90 px-3 py-1 text-sm font-semibold shadow-lg backdrop-blur-sm">
-                  <span
-                    className={
-                      face.recognized ? "text-emerald-400" : "text-rose-400"
-                    }
-                  >
-                    {face.recognized ? face.name || "Reconnu" : "Inconnu"}
-                  </span>
-                  <span className="font-mono text-xs text-slate-400">
-                    {(face.confidence * 100).toFixed(0)}%
-                  </span>
-                </div>
+        {faces.map((face, index) => {
+          const rect = mapRect(face.faceRectangle);
+          if (!rect) return null;
+          const border = face.recognized
+            ? "border-emerald-400"
+            : "border-rose-500";
+          const shadow = face.recognized
+            ? "shadow-[0_0_15px_rgba(16,185,129,0.5)]"
+            : "shadow-[0_0_15px_rgba(239,68,68,0.5)]";
+          return (
+            <div
+              key={`face-${index}`}
+              className={`pointer-events-none absolute rounded-lg border-2 transition-all duration-300 ${border} ${shadow}`}
+              style={{
+                left: `${rect.left}px`,
+                top: `${rect.top}px`,
+                width: `${rect.width}px`,
+                height: `${rect.height}px`,
+              }}
+            >
+              <div className="absolute left-1/2 top-[-35px] flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-[var(--color-border)] bg-slate-900/90 px-3 py-1 text-sm font-semibold shadow-lg backdrop-blur-sm">
+                <span
+                  className={
+                    face.recognized ? "text-emerald-400" : "text-rose-400"
+                  }
+                >
+                  {face.recognized ? face.name || "Reconnu" : "Inconnu"}
+                </span>
+                <span className="font-mono text-xs text-slate-400">
+                  {(face.confidence * 100).toFixed(0)}%
+                </span>
               </div>
-            );
-          })}
+            </div>
+          );
+        })}
 
         <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-lg border border-white/10 bg-black/50 px-3 py-1.5 text-xs font-medium backdrop-blur-md">
           <Camera className="h-4 w-4 text-slate-300" aria-hidden="true" />
