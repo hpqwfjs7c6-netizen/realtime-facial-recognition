@@ -19,7 +19,6 @@ export interface FaceData {
 export interface ReferenceFace {
   id: number;
   name: string;
-  image_path: string;
   created_at?: string;
 }
 

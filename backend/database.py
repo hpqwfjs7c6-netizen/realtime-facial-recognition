@@ -66,10 +66,21 @@ def add_reference(name: str, image_path: str) -> dict:
             (name, image_path, _now()),
         )
         ref_id = cur.lastrowid
-    return {"id": ref_id, "name": name, "image_path": image_path}
+    # N'expose pas image_path (chemin filesystem interne) dans les réponses API.
+    return {"id": ref_id, "name": name}
 
 
 def list_references() -> list[dict]:
+    """Liste publique des références — sans le chemin filesystem interne."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, name, created_at FROM references_face ORDER BY created_at DESC"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_references_internal() -> list[dict]:
+    """Usage interne : inclut image_path (jamais exposé via l'API)."""
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT id, name, image_path, created_at FROM references_face ORDER BY created_at DESC"

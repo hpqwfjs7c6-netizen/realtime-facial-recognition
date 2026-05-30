@@ -27,8 +27,28 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("recognition.api")
 
 
+# Signatures binaires des formats image acceptés (magic bytes).
+_IMAGE_MAGIC = (
+    b"\xff\xd8\xff",          # JPEG
+    b"\x89PNG\r\n\x1a\n",     # PNG
+    b"RIFF",                  # WEBP (RIFF....WEBP)
+    b"BM",                    # BMP
+)
+
+
+def _looks_like_image(data: bytes) -> bool:
+    if data.startswith(b"RIFF"):
+        return data[8:12] == b"WEBP"
+    return any(data.startswith(sig) for sig in _IMAGE_MAGIC)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.is_production() and not settings.API_KEY:
+        raise RuntimeError(
+            "API_KEY est obligatoire en production (ENV=production). "
+            "Définissez API_KEY ou passez en ENV=development."
+        )
     database.init_db()
     if not settings.azure_configured():
         logger.warning("Clés Azure manquantes : la détection de visages échouera.")
@@ -82,10 +102,19 @@ async def get_settings() -> dict:
 
 def _decode_image(data_url: str) -> bytes:
     raw = data_url.split(",", 1)[1] if "," in data_url else data_url
+    # Rejette tôt les payloads démesurés (4 caractères base64 ≈ 3 octets) afin
+    # d'éviter d'allouer la mémoire du décodage pour un flux abusif.
+    if len(raw) > (settings.MAX_IMAGE_BYTES // 3 + 1) * 4:
+        raise HTTPException(status_code=413, detail="Image trop volumineuse.")
     try:
-        return base64.b64decode(raw)
+        data = base64.b64decode(raw)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Erreur de décodage base64 : {exc}")
+    if len(data) > settings.MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="Image trop volumineuse.")
+    if not _looks_like_image(data):
+        raise HTTPException(status_code=400, detail="Format d'image non reconnu.")
+    return data
 
 
 @app.post("/analyze-face", dependencies=[Depends(require_api_key)])
@@ -172,8 +201,19 @@ async def enroll_reference(name: str = Form(...), file: UploadFile = File(...)) 
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Fichier vide.")
+    if len(content) > settings.MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Fichier trop volumineux.")
+    if not _looks_like_image(content):
+        raise HTTPException(status_code=400, detail="Le fichier n'est pas une image valide.")
     database.init_db()  # garantit que REFERENCES_DIR existe
-    ext = os.path.splitext(file.filename or "")[1] or ".jpg"
+    # N'autorise qu'une extension connue, dérivée du contenu réel (pas du nom client).
+    ext = ".jpg"
+    if content.startswith(b"\x89PNG"):
+        ext = ".png"
+    elif content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        ext = ".webp"
+    elif content.startswith(b"BM"):
+        ext = ".bmp"
     safe_name = "".join(c for c in name if c.isalnum() or c in ("-", "_")) or "ref"
     dest = os.path.join(settings.REFERENCES_DIR, f"{safe_name}_{os.urandom(4).hex()}{ext}")
     with open(dest, "wb") as f:
@@ -195,6 +235,8 @@ async def remove_reference(ref_id: int) -> dict:
 
 @app.get("/history", dependencies=[Depends(require_api_key)])
 async def get_history(limit: int = 50) -> dict:
+    # Borne le paramètre pour éviter les extractions massives.
+    limit = max(1, min(limit, settings.HISTORY_LIMIT_MAX))
     return {"events": database.list_events(limit=limit)}
 
 

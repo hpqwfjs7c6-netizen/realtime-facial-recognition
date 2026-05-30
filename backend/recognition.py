@@ -6,7 +6,7 @@ import tempfile
 import requests
 
 from config import settings
-from database import list_references
+from database import list_references_internal
 
 logger = logging.getLogger("recognition.engine")
 
@@ -57,7 +57,7 @@ def verify_against_references(capture_path: str) -> tuple[bool, float, dict | No
         logger.warning("DeepFace n'est pas installé.")
         return False, 0.0, None
 
-    references = list_references()
+    references = list_references_internal()
     if not references:
         return False, 0.0, None
 

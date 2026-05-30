@@ -19,5 +19,7 @@ ENV PORT=3000
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+# Le serveur standalone tourne sous l'utilisateur non-root fourni par l'image node.
+USER node
 EXPOSE 3000
 CMD ["node", "server.js"]
