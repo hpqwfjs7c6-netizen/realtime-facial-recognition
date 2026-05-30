@@ -1,0 +1,4 @@
+# Les scripts shell doivent toujours être en LF, même sur un checkout Windows,
+# sinon le shebang CRLF casse l'exécution dans les conteneurs Linux.
+*.sh text eol=lf
+docker-entrypoint.sh text eol=lf
