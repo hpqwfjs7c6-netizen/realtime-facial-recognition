@@ -10,11 +10,13 @@ services:
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # URL appelée par le navigateur (figée au build de Next.js).
+        NEXT_PUBLIC_BACKEND_URL: http://localhost:8000
     ports:
       - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
     depends_on:
       - backend
     restart: unless-stopped

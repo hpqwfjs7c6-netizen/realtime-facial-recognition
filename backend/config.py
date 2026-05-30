@@ -12,6 +12,20 @@ def _get_float(name: str, default: float) -> float:
         return default
 
 
+def _get_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _get_list(name: str, default: str) -> list[str]:
     raw = os.getenv(name, default)
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -42,14 +56,28 @@ class Settings:
     RECOGNITION_ACTION: str = os.getenv("RECOGNITION_ACTION", "log").lower()
     RECOGNITION_COMMAND: str = os.getenv("RECOGNITION_COMMAND", "")
     RECOGNITION_WEBHOOK_URL: str = os.getenv("RECOGNITION_WEBHOOK_URL", "")
+    # L'exécution de commandes arbitraires (RECOGNITION_ACTION=command) est une
+    # surface d'abus : elle doit être explicitement activée par l'opérateur.
+    ALLOW_COMMAND_ACTION: bool = _get_bool("ALLOW_COMMAND_ACTION", False)
 
     # --- Sécurité / API ---
     API_KEY: str = os.getenv("API_KEY", "")  # vide = pas d'auth
+    # En production, refuser le démarrage si aucune clé API n'est définie.
+    ENV: str = os.getenv("ENV", "development").lower()
     CORS_ORIGINS: list[str] = _get_list("CORS_ORIGINS", "http://localhost:3000")
+
+    # --- Limites d'entrée (anti-DoS) ---
+    MAX_IMAGE_BYTES: int = _get_int("MAX_IMAGE_BYTES", 8 * 1024 * 1024)  # 8 Mio
+    MAX_UPLOAD_BYTES: int = _get_int("MAX_UPLOAD_BYTES", 8 * 1024 * 1024)  # 8 Mio
+    HISTORY_LIMIT_MAX: int = _get_int("HISTORY_LIMIT_MAX", 200)
 
     @classmethod
     def azure_configured(cls) -> bool:
         return bool(cls.AZURE_FACE_ENDPOINT and cls.AZURE_FACE_KEY)
+
+    @classmethod
+    def is_production(cls) -> bool:
+        return cls.ENV in ("production", "prod")
 
 
 settings = Settings()

@@ -26,6 +26,7 @@ function Dashboard() {
   const { notify } = useToast();
   const webcamRef = useRef<Webcam>(null);
   const inFlightRef = useRef(false);
+  const cameraSizeRef = useRef({ width: 0, height: 0 });
 
   const [faces, setFaces] = useState<FaceData[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -108,7 +109,13 @@ function Dashboard() {
     setIsAnalyzing(true);
     try {
       const data = await api.analyzeFace(imageSrc);
-      setFaces(data.faces || []);
+      // Filtre anti-faux-positifs : ignore les visages trop petits par rapport
+      // au cadre (arrière-plan, TV, reflets). Seuil : 6 % de la largeur.
+      const w = cameraSizeRef.current.width;
+      const filtered = (data.faces || []).filter(
+        (f) => w === 0 || f.faceRectangle.width / w >= 0.06,
+      );
+      setFaces(filtered);
       setBackendOnline(true);
     } catch (err) {
       setBackendOnline(false);
@@ -141,7 +148,9 @@ function Dashboard() {
 
   const handleVideoLoad = (e: React.SyntheticEvent<HTMLVideoElement>) => {
     const v = e.currentTarget;
-    setCameraSize({ width: v.videoWidth, height: v.videoHeight });
+    const size = { width: v.videoWidth, height: v.videoHeight };
+    cameraSizeRef.current = size;
+    setCameraSize(size);
   };
 
   return (

@@ -20,17 +20,29 @@ export default function CameraView({
   onVideoLoad,
   isAnalyzing,
 }: Props) {
+  // Le conteneur adopte exactement le ratio de la caméra : aucun rognage,
+  // donc les coordonnées Azure se mappent en pourcentage exact (zéro décalage).
+  const ratio =
+    cameraSize.width > 0 && cameraSize.height > 0
+      ? cameraSize.width / cameraSize.height
+      : 16 / 9;
+
   return (
     <section className="flex flex-col gap-4" aria-label="Flux caméra">
-      <div className="relative aspect-video overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-2xl">
+      <div
+        className="relative w-full overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-2xl"
+        style={{ aspectRatio: ratio }}
+      >
         <Webcam
           ref={webcamRef}
           audio={false}
           screenshotFormat="image/jpeg"
           screenshotQuality={0.7}
+          forceScreenshotSourceSize
+          mirrored
           videoConstraints={{ facingMode: "user", width: 1280, height: 720 }}
           onLoadedData={onVideoLoad}
-          className="h-full w-full object-cover"
+          className="h-full w-full object-fill"
           aria-label="Flux vidéo en direct de la webcam"
         />
 
@@ -50,7 +62,7 @@ export default function CameraView({
             return (
               <div
                 key={`face-${index}`}
-                className={`absolute rounded-lg border-2 transition-all duration-300 ${border} ${shadow}`}
+                className={`pointer-events-none absolute rounded-lg border-2 transition-all duration-300 ${border} ${shadow}`}
                 style={{
                   left: `${left}%`,
                   top: `${top}%`,

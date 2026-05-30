@@ -33,6 +33,12 @@ def trigger_action(name: str | None, confidence: float) -> str:
         return "Journalisé"
 
     if action == "command":
+        if not settings.ALLOW_COMMAND_ACTION:
+            logger.warning(
+                "RECOGNITION_ACTION=command est désactivé "
+                "(définir ALLOW_COMMAND_ACTION=true pour l'activer)."
+            )
+            return "Action commande désactivée"
         cmd = settings.RECOGNITION_COMMAND.strip()
         if not cmd:
             logger.warning("RECOGNITION_ACTION=command mais RECOGNITION_COMMAND est vide.")

@@ -72,10 +72,34 @@ def test_enroll_and_list_and_delete(client):
 
     listed = client.get("/references").json()["references"]
     assert any(r["id"] == ref_id for r in listed)
+    # image_path (chemin filesystem interne) ne doit jamais fuiter via l'API.
+    assert all("image_path" not in r for r in listed)
 
     deleted = client.delete(f"/references/{ref_id}")
     assert deleted.status_code == 200
     assert deleted.json()["deleted"] == ref_id
+
+
+def test_enroll_rejects_non_image(client):
+    resp = client.post(
+        "/references",
+        data={"name": "Mallory"},
+        files={"file": ("evil.jpg", io.BytesIO(b"not an image"), "image/jpeg")},
+    )
+    assert resp.status_code == 400
+
+
+def test_analyze_rejects_non_image(client):
+    # base64 valide mais contenu non-image -> rejet de format.
+    payload = "data:image/jpeg;base64," + base64.b64encode(b"hello world").decode()
+    resp = client.post("/analyze-face", json={"image": payload})
+    assert resp.status_code == 400
+
+
+def test_history_limit_is_bounded(client):
+    resp = client.get("/history?limit=999999")
+    assert resp.status_code == 200
+    assert len(resp.json()["events"]) <= 200
 
 
 def test_history_records_events(client, monkeypatch):
