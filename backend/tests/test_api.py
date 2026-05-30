@@ -60,6 +60,69 @@ def test_analyze_recognized(client, monkeypatch):
     assert face["confidence"] == 0.91
 
 
+def test_auto_enroll_unknown_clear_face(client, monkeypatch):
+    """Un visage net non reconnu est auto-enrôlé puis renvoyé comme « Visage N »."""
+    fake = [{"faceRectangle": {"top": 0, "left": 0, "width": 1, "height": 1},
+             "faceAttributes": {"headPose": {"pitch": 0, "yaw": 0, "roll": 0}}}]
+    monkeypatch.setattr(recognition, "detect_faces", lambda b: fake)
+    # DeepFace présent (sentinel) mais aucune correspondance -> auto-enrôlement.
+    monkeypatch.setattr(recognition, "DeepFace", object())
+    monkeypatch.setattr(recognition, "verify_against_references", lambda p: (False, 0.0, None))
+
+    resp = client.post("/analyze-face", json={"image": PIXEL_B64})
+    assert resp.status_code == 200
+    face = resp.json()["faces"][0]
+    assert face["recognized"] is True
+    assert face["name"].startswith("Visage ")
+    assert face["system_action"] == "Auto-enrôlé"
+
+    refs = client.get("/references").json()["references"]
+    assert any(r["name"].startswith("Visage ") and r["auto"] is True for r in refs)
+
+
+def test_auto_enroll_disabled(client, monkeypatch):
+    from config import settings
+    monkeypatch.setattr(settings, "AUTO_ENROLL", False)
+    fake = [{"faceRectangle": {"top": 0, "left": 0, "width": 1, "height": 1},
+             "faceAttributes": {"headPose": {"pitch": 0, "yaw": 0, "roll": 0}}}]
+    monkeypatch.setattr(recognition, "detect_faces", lambda b: fake)
+    monkeypatch.setattr(recognition, "verify_against_references", lambda p: (False, 0.0, None))
+    resp = client.post("/analyze-face", json={"image": PIXEL_B64})
+    assert resp.json()["faces"][0]["recognized"] is False
+
+
+def test_rename_reference(client):
+    img = base64.b64decode(PIXEL_B64.split(",", 1)[1])
+    ref_id = client.post(
+        "/references",
+        data={"name": "Visage 1"},
+        files={"file": ("v.jpg", io.BytesIO(img), "image/jpeg")},
+    ).json()["id"]
+
+    resp = client.patch(f"/references/{ref_id}", json={"name": "Charlie"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Charlie"
+
+    listed = client.get("/references").json()["references"]
+    assert any(r["id"] == ref_id and r["name"] == "Charlie" for r in listed)
+
+    # Renommer une référence inexistante -> 404.
+    assert client.patch("/references/999999", json={"name": "X"}).status_code == 404
+
+
+def test_reference_image_endpoint(client):
+    img = base64.b64decode(PIXEL_B64.split(",", 1)[1])
+    ref_id = client.post(
+        "/references",
+        data={"name": "Dora"},
+        files={"file": ("d.jpg", io.BytesIO(img), "image/jpeg")},
+    ).json()["id"]
+    resp = client.get(f"/references/{ref_id}/image")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/")
+    assert client.get("/references/999999/image").status_code == 404
+
+
 def test_enroll_and_list_and_delete(client):
     img = base64.b64decode(PIXEL_B64.split(",", 1)[1])
     resp = client.post(

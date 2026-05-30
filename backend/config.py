@@ -51,6 +51,17 @@ class Settings:
     # Modèle DeepFace
     DEEPFACE_MODEL: str = os.getenv("DEEPFACE_MODEL", "VGG-Face")
 
+    # --- Auto-enrôlement ---
+    # Quand un visage net (angle franc) n'est pas reconnu, il est automatiquement
+    # enregistré comme nouvelle référence « Visage N ».
+    AUTO_ENROLL: bool = _get_bool("AUTO_ENROLL", True)
+    # Seuils head pose stricts pour ne capturer qu'un visage de face bien net.
+    AUTO_ENROLL_PITCH_MAX: float = _get_float("AUTO_ENROLL_PITCH_MAX", 8.0)
+    AUTO_ENROLL_YAW_MAX: float = _get_float("AUTO_ENROLL_YAW_MAX", 8.0)
+    AUTO_ENROLL_ROLL_MAX: float = _get_float("AUTO_ENROLL_ROLL_MAX", 12.0)
+    # Ne pas auto-enrôler un visage trop petit (qualité insuffisante).
+    AUTO_ENROLL_MIN_WIDTH_RATIO: float = _get_float("AUTO_ENROLL_MIN_WIDTH_RATIO", 0.08)
+
     # --- Action déclenchée à la reconnaissance ---
     # Valeurs: none | log | command | webhook
     RECOGNITION_ACTION: str = os.getenv("RECOGNITION_ACTION", "log").lower()

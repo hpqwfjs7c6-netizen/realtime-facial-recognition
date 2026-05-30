@@ -19,6 +19,7 @@ export interface FaceData {
 export interface ReferenceFace {
   id: number;
   name: string;
+  auto?: boolean;
   created_at?: string;
 }
 

@@ -25,7 +25,7 @@ def get_connection():
 
 
 def init_db() -> None:
-    """Crée les tables si elles n'existent pas."""
+    """Crée les tables si elles n'existent pas, puis applique les migrations."""
     _ensure_dirs()
     with get_connection() as conn:
         conn.executescript(
@@ -34,6 +34,7 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 image_path TEXT NOT NULL,
+                auto INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
 
@@ -49,41 +50,85 @@ def init_db() -> None:
                 system_action TEXT,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             """
         )
+        # Migration : ajoute la colonne `auto` aux bases antérieures.
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(references_face)")}
+        if "auto" not in cols:
+            conn.execute("ALTER TABLE references_face ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# --- Compteur persistant (libellés auto « Visage N ») ---
+
+def next_auto_label() -> str:
+    """Retourne le prochain libellé automatique « Visage N » (compteur monotone)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'auto_face_seq'"
+        ).fetchone()
+        current = int(row["value"]) if row else 0
+        nxt = current + 1
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('auto_face_seq', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(nxt),),
+        )
+    return f"Visage {nxt}"
+
+
 # --- Références ---
 
-def add_reference(name: str, image_path: str) -> dict:
+def add_reference(name: str, image_path: str, auto: bool = False) -> dict:
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO references_face (name, image_path, created_at) VALUES (?, ?, ?)",
-            (name, image_path, _now()),
+            "INSERT INTO references_face (name, image_path, auto, created_at) VALUES (?, ?, ?, ?)",
+            (name, image_path, 1 if auto else 0, _now()),
         )
         ref_id = cur.lastrowid
     # N'expose pas image_path (chemin filesystem interne) dans les réponses API.
-    return {"id": ref_id, "name": name}
+    return {"id": ref_id, "name": name, "auto": auto}
+
+
+def update_reference_name(ref_id: int, name: str) -> dict | None:
+    """Renomme une référence. La marque comme non-automatique (nommée manuellement)."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE references_face SET name = ?, auto = 0 WHERE id = ?",
+            (name, ref_id),
+        )
+        if cur.rowcount == 0:
+            return None
+    return {"id": ref_id, "name": name, "auto": False}
 
 
 def list_references() -> list[dict]:
     """Liste publique des références — sans le chemin filesystem interne."""
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id, name, created_at FROM references_face ORDER BY created_at DESC"
+            "SELECT id, name, auto, created_at FROM references_face ORDER BY created_at DESC"
         ).fetchall()
-    return [dict(row) for row in rows]
+    refs = []
+    for row in rows:
+        ref = dict(row)
+        ref["auto"] = bool(ref["auto"])
+        refs.append(ref)
+    return refs
 
 
 def list_references_internal() -> list[dict]:
     """Usage interne : inclut image_path (jamais exposé via l'API)."""
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id, name, image_path, created_at FROM references_face ORDER BY created_at DESC"
+            "SELECT id, name, image_path, auto, created_at FROM references_face ORDER BY created_at DESC"
         ).fetchall()
     return [dict(row) for row in rows]
 
