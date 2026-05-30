@@ -76,6 +76,19 @@ function Dashboard() {
     [notify, loadReferences],
   );
 
+  const renameReference = useCallback(
+    async (id: number, name: string) => {
+      try {
+        await api.updateReference(id, name);
+        notify(`Référence renommée « ${name} ».`, "success");
+        await loadReferences();
+      } catch (err) {
+        notify(`Échec du renommage : ${(err as Error).message}`, "error");
+      }
+    },
+    [notify, loadReferences],
+  );
+
   const deleteReference = useCallback(
     async (id: number) => {
       try {
@@ -117,6 +130,10 @@ function Dashboard() {
       );
       setFaces(filtered);
       setBackendOnline(true);
+      // Un nouveau visage vient d'être auto-enrôlé : rafraîchit la liste.
+      if (filtered.some((f) => f.system_action === "Auto-enrôlé")) {
+        void loadReferences();
+      }
     } catch (err) {
       setBackendOnline(false);
       notify(`Analyse : ${(err as Error).message}`, "error");
@@ -124,7 +141,7 @@ function Dashboard() {
       inFlightRef.current = false;
       setIsAnalyzing(false);
     }
-  }, [notify]);
+  }, [notify, loadReferences]);
 
   // Au montage : santé + données initiales (récupération asynchrone légitime,
   // les setState surviennent après await — pas de rendu en cascade synchrone).
@@ -249,6 +266,7 @@ function Dashboard() {
                 <ReferencesPanel
                   references={references}
                   onAdd={addReference}
+                  onRename={renameReference}
                   onDelete={deleteReference}
                 />
               )}

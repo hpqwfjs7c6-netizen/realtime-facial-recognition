@@ -72,11 +72,31 @@ export const api = {
     });
   },
 
+  updateReference: (id: number, name: string) =>
+    request<ReferenceFace>(`/references/${id}`, {
+      method: "PATCH",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ name }),
+    }),
+
   deleteReference: (id: number) =>
     request<{ deleted: number }>(`/references/${id}`, {
       method: "DELETE",
       headers: authHeaders(),
     }),
+
+  // Récupère la miniature du visage (auth par header → blob → object URL).
+  referenceImageUrl: async (id: number): Promise<string | null> => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/references/${id}/image`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) return null;
+      return URL.createObjectURL(await res.blob());
+    } catch {
+      return null;
+    }
+  },
 
   history: (limit = 50) =>
     request<{ events: RecognitionEvent[] }>(`/history?limit=${limit}`, {

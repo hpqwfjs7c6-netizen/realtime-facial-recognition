@@ -10,13 +10,15 @@ Endpoints :
   GET  /settings            -> seuils et configuration courante
 """
 import base64
+import io
 import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 import database
 import recognition
@@ -79,6 +81,33 @@ class ImagePayload(BaseModel):
     image: str
 
 
+class RenamePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+def _maybe_auto_enroll(
+    image_bytes: bytes, rect: dict, pitch: float, yaw: float, roll: float, frame_width: int
+) -> dict | None:
+    """Enrôle automatiquement un visage net non reconnu comme nouvelle référence.
+
+    Retourne la référence créée, ou None si les conditions ne sont pas réunies.
+    """
+    if not settings.AUTO_ENROLL:
+        return None
+    if not recognition.is_clear_for_enrollment(pitch, yaw, roll):
+        return None
+    # Ignore les visages trop petits (qualité de référence insuffisante).
+    face_w = rect.get("width", 0)
+    if frame_width > 0 and face_w / frame_width < settings.AUTO_ENROLL_MIN_WIDTH_RATIO:
+        return None
+
+    image_path = recognition.save_reference_image(image_bytes, rect)
+    label = database.next_auto_label()
+    ref = database.add_reference(label, image_path, auto=True)
+    logger.info("Auto-enrôlement : nouvelle référence « %s » (id=%s).", label, ref["id"])
+    return ref
+
+
 @app.get("/health")
 async def health() -> dict:
     return {
@@ -132,10 +161,17 @@ async def analyze_face(payload: ImagePayload) -> dict:
     if not detected:
         return {"faces": []}
 
-    capture_path = recognition.save_temp_capture(image_bytes)
+    # Largeur de l'image (pour le seuil de taille minimale à l'auto-enrôlement).
+    frame_width = 0
+    if recognition.Image is not None:
+        try:
+            with recognition.Image.open(io.BytesIO(image_bytes)) as _img:
+                frame_width = _img.size[0]
+        except Exception:  # noqa: BLE001
+            frame_width = 0
+
     faces_out = []
-    try:
-        for face in detected:
+    for face in detected:
             rect = face.get("faceRectangle", {})
             pose = face.get("faceAttributes", {}).get("headPose", {})
             pitch = pose.get("pitch", 0.0)
@@ -151,15 +187,33 @@ async def analyze_face(payload: ImagePayload) -> dict:
             if not recognition.is_looking_direct(pitch, yaw):
                 system_action = "User looking away"
             else:
-                recognized, confidence, matched = recognition.verify_against_references(capture_path)
+                # Recadrage par visage : la vérification (et l'enrôlement) porte
+                # sur ce visage précis, pas sur l'ensemble de la frame.
+                face_path = recognition.save_temp_capture(image_bytes, rect)
+                try:
+                    recognized, confidence, matched = recognition.verify_against_references(face_path)
+                finally:
+                    if os.path.exists(face_path):
+                        os.remove(face_path)
+
                 if recognized and matched:
                     name = matched["name"]
                     ref_id = matched["id"]
                     system_action = trigger_action(name, confidence)
-                elif recognition.DeepFace is None or not database.list_references():
+                elif recognition.DeepFace is None:
                     system_action = "No reference / DeepFace missing"
                 else:
-                    system_action = "Not recognized"
+                    enrolled = _maybe_auto_enroll(image_bytes, rect, pitch, yaw, roll, frame_width)
+                    if enrolled:
+                        recognized = True
+                        confidence = 0.99
+                        name = enrolled["name"]
+                        ref_id = enrolled["id"]
+                        system_action = "Auto-enrôlé"
+                    elif not database.list_references():
+                        system_action = "No reference / DeepFace missing"
+                    else:
+                        system_action = "Not recognized"
 
             database.log_event(
                 recognized=recognized,
@@ -189,9 +243,6 @@ async def analyze_face(payload: ImagePayload) -> dict:
                     "system_action": system_action,
                 }
             )
-    finally:
-        if os.path.exists(capture_path):
-            os.remove(capture_path)
 
     return {"faces": faces_out}
 
@@ -224,6 +275,22 @@ async def enroll_reference(name: str = Form(...), file: UploadFile = File(...)) 
 @app.get("/references", dependencies=[Depends(require_api_key)])
 async def get_references() -> dict:
     return {"references": database.list_references()}
+
+
+@app.patch("/references/{ref_id}", dependencies=[Depends(require_api_key)])
+async def rename_reference(ref_id: int, payload: RenamePayload) -> dict:
+    updated = database.update_reference_name(ref_id, payload.name.strip())
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Référence introuvable.")
+    return updated
+
+
+@app.get("/references/{ref_id}/image", dependencies=[Depends(require_api_key)])
+async def get_reference_image(ref_id: int) -> FileResponse:
+    ref = database.get_reference(ref_id)
+    if not ref or not ref.get("image_path") or not os.path.exists(ref["image_path"]):
+        raise HTTPException(status_code=404, detail="Image introuvable.")
+    return FileResponse(ref["image_path"], media_type="image/jpeg")
 
 
 @app.delete("/references/{ref_id}", dependencies=[Depends(require_api_key)])
