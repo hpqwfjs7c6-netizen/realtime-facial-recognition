@@ -197,7 +197,7 @@ Windows git clones converted `docker-entrypoint.sh` to CRLF, breaking the sheban
 
 Multi-sprint program to harden security, reliability, performance, and
 operability. Executed **sprint-by-sprint with a review pause between each**.
-Status: **Sprint 0 ✅ · Sprint 1 ✅ · Sprints 2–4 pending.**
+Status: **Sprint 0 ✅ · Sprint 1 ✅ · Sprint 2 ✅ · Sprints 3–4 pending.**
 
 ### Sprint 0 — Diagnostic & Cadrage
 
@@ -274,7 +274,47 @@ mémoïsation `timeAgo`, dimensions d'image non validées, VACUUM SQLite.
 - [x] Exposition secret client documentée
 - [x] Tests d'authentification / headers / 429 / masquage
 
-### Sprints 2–4 — à venir
-Voir le backlog. Sprint 2 (fiabilité Azure/DeepFace, persistance, tests d'échec),
-Sprint 3 (perf/UX frontend, tests front), Sprint 4 (observabilité, runbook,
-dashboards, revue finale).
+### Sprint 2 — Fiabilité & Résilience (livré)
+
+- **Azure retries/backoff (R7)**: `recognition.detect_faces` réessaie sur
+  erreurs réseau (`ConnectionError`/`Timeout`) et statuts transitoires
+  (429/500/502/503/504) avec backoff exponentiel
+  (`AZURE_BACKOFF_BASE * 2**tentative`). Réglable :
+  `AZURE_MAX_RETRIES` (défaut 2), `AZURE_BACKOFF_BASE` (défaut 0.5). Les 4xx
+  non transitoires sont propagées immédiatement.
+- **DeepFace timeout (R8)**: `_verify_with_timeout()` exécute `DeepFace.verify`
+  dans un `ThreadPoolExecutor` borné par `DEEPFACE_TIMEOUT` (défaut 20 s). Un
+  dépassement journalise et passe à la référence suivante (pas de hang).
+- **Frontend erreur réseau (R9)**: `api.ts` convertit le `TypeError` de `fetch`
+  (backend injoignable) en message clair « Backend injoignable » au lieu de
+  propager « Failed to fetch ».
+- **Rétention historique (R10)**: `database.purge_old_events(ttl_days, max_rows)`
+  supprime les événements > `HISTORY_TTL_DAYS` (défaut 30) et plafonne à
+  `HISTORY_MAX_ROWS` (défaut 10000). Appelée au démarrage + tâche d'arrière-plan
+  périodique (`_periodic_purge`, toutes les 6 h) dans `lifespan`.
+- **Index & intégrité (R11)**: index `idx_events_created_at` et
+  `idx_events_reference_id` (idempotents). À la suppression d'une référence,
+  les événements liés voient leur `reference_id` mis à `NULL` (évite les
+  orphelins). FK stricte reportée (nécessiterait un rebuild de table).
+- **Nettoyage temp robuste (R12)**: la suppression du fichier de capture dans
+  `analyze_face` est best-effort (try/except `OSError`) et ne masque plus
+  l'erreur métier d'origine.
+- **Tests d'échec (R14 backend)**: `test_azure_retries_then_succeeds`,
+  `test_azure_retries_exhausted`, `test_deepface_timeout_skips_reference`,
+  `test_purge_old_events`, `test_purge_max_rows_cap`,
+  `test_delete_reference_nulls_event_link`.
+
+#### Sprint 2 — Checklist fiabilité
+- [x] Retries/backoff Azure
+- [x] Timeout DeepFace
+- [x] Gestion erreur réseau frontend
+- [x] Purge/TTL historique + plafond de lignes
+- [x] Index SQLite + intégrité au delete
+- [x] Nettoyage fichiers temporaires robuste
+- [x] Tests d'échec backend
+
+### Sprints 3–4 — à venir
+Sprint 3 (perf/UX frontend : useCallback, clés de liste, debounce, health-check
+périodique + reconnexion, tests front), Sprint 4 (observabilité : logs
+structurés, endpoint metrics, runbook, dashboards, proxy serveur pour R6,
+revue finale).

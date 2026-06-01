@@ -9,6 +9,7 @@ Endpoints :
   GET  /history             -> historique des reconnaissances
   GET  /settings            -> seuils et configuration courante
 """
+import asyncio
 import base64
 import io
 import logging
@@ -49,6 +50,18 @@ def _looks_like_image(data: bytes) -> bool:
     return any(data.startswith(sig) for sig in _IMAGE_MAGIC)
 
 
+async def _periodic_purge(interval_seconds: float = 6 * 3600) -> None:
+    """Tâche d'arrière-plan : purge périodiquement l'historique (R10)."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            removed = await asyncio.to_thread(database.purge_old_events)
+            if removed:
+                logger.info("Purge historique : %d événement(s) supprimé(s).", removed)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Échec de la purge d'historique : %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if settings.is_production() and not settings.API_KEY:
@@ -61,8 +74,16 @@ async def lifespan(app: FastAPI):
         logger.warning("Clés Azure manquantes : la détection de visages échouera.")
     if recognition.DeepFace is None:
         logger.warning("DeepFace non installé : la vérification 1:1 échouera (pip install deepface).")
+    # Purge au démarrage, puis périodiquement en arrière-plan.
+    removed = database.purge_old_events()
+    if removed:
+        logger.info("Purge historique au démarrage : %d événement(s) supprimé(s).", removed)
+    purge_task = asyncio.create_task(_periodic_purge())
     logger.info("Démarrage OK — %d référence(s) enrôlée(s).", len(database.list_references()))
-    yield
+    try:
+        yield
+    finally:
+        purge_task.cancel()
 
 
 app = FastAPI(title="Real-time Facial Recognition API", version="2.0.0", lifespan=lifespan)
@@ -238,8 +259,13 @@ async def analyze_face(payload: ImagePayload) -> dict:
                 try:
                     recognized, confidence, matched = recognition.verify_against_references(face_path)
                 finally:
-                    if os.path.exists(face_path):
-                        os.remove(face_path)
+                    # Nettoyage best-effort : ne jamais masquer l'erreur métier
+                    # d'origine si la suppression du fichier temporaire échoue.
+                    try:
+                        if os.path.exists(face_path):
+                            os.remove(face_path)
+                    except OSError as exc:
+                        logger.warning("Nettoyage capture temporaire impossible : %s", exc)
 
                 if recognized and matched:
                     name = matched["name"]

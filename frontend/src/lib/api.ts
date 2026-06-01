@@ -45,6 +45,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     if (err instanceof DOMException && err.name === "AbortError") {
       throw new Error("Délai d'attente dépassé. Le backend répond-il ?");
     }
+    // Échec réseau (backend injoignable, CORS, DNS) : `fetch` rejette avec un
+    // TypeError. On le convertit en message clair plutôt que de propager
+    // « Failed to fetch » brut à l'UI.
+    if (err instanceof TypeError) {
+      throw new Error("Backend injoignable. Vérifiez la connexion.");
+    }
     throw err;
   } finally {
     clearTimeout(timeout);

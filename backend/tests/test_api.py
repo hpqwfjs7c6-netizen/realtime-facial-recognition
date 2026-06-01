@@ -241,3 +241,142 @@ def test_rate_limit_enforced():
     with TestClient(app) as c:
         statuses = [c.get("/ping").status_code for _ in range(6)]
     assert 429 in statuses
+
+
+# --- Sprint 2 — Fiabilité & résilience ---
+
+def test_azure_retries_then_succeeds(monkeypatch):
+    """detect_faces réessaie sur erreur réseau transitoire puis réussit."""
+    import requests
+
+    from config import settings
+
+    monkeypatch.setattr(settings, "AZURE_MAX_RETRIES", 2)
+    monkeypatch.setattr(settings, "AZURE_BACKOFF_BASE", 0)  # pas d'attente en test
+    monkeypatch.setattr(recognition.time, "sleep", lambda s: None)
+
+    calls = {"n": 0}
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [{"faceRectangle": {}}]
+
+    def fake_post(*a, **k):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise requests.ConnectionError("boom")
+        return _Resp()
+
+    monkeypatch.setattr(recognition.requests, "post", fake_post)
+    result = recognition.detect_faces(b"img")
+    assert calls["n"] == 3
+    assert result == [{"faceRectangle": {}}]
+
+
+def test_azure_retries_exhausted(monkeypatch):
+    """Après épuisement des tentatives, l'erreur réseau est propagée."""
+    import requests
+
+    from config import settings
+
+    monkeypatch.setattr(settings, "AZURE_MAX_RETRIES", 1)
+    monkeypatch.setattr(settings, "AZURE_BACKOFF_BASE", 0)
+    monkeypatch.setattr(recognition.time, "sleep", lambda s: None)
+
+    def always_fail(*a, **k):
+        raise requests.Timeout("slow")
+
+    monkeypatch.setattr(recognition.requests, "post", always_fail)
+    try:
+        recognition.detect_faces(b"img")
+        assert False, "devait lever une exception réseau"
+    except requests.RequestException:
+        pass
+
+
+def test_deepface_timeout_skips_reference(monkeypatch, tmp_path):
+    """Une vérification DeepFace qui dépasse le délai n'interrompt pas la boucle."""
+    import time as _time
+
+    from config import settings
+
+    import types
+
+    ref_img = tmp_path / "ref.jpg"
+    ref_img.write_bytes(b"x")
+    monkeypatch.setattr(settings, "DEEPFACE_TIMEOUT", 0.2)
+
+    def slow_verify(*a, **k):
+        _time.sleep(2)
+        return {"verified": True, "distance": 0.1}
+
+    monkeypatch.setattr(recognition, "DeepFace", types.SimpleNamespace(verify=slow_verify))
+    monkeypatch.setattr(
+        recognition, "list_references_internal",
+        lambda: [{"id": 1, "name": "Slow", "image_path": str(ref_img)}],
+    )
+    recognized, confidence, matched = recognition.verify_against_references("cap.jpg")
+    assert recognized is False
+    assert matched is None
+
+
+def test_purge_old_events(client):
+    import database
+
+    # Événement ancien (au-delà du TTL) + événement récent.
+    with database.get_connection() as conn:
+        conn.execute(
+            """INSERT INTO recognition_events
+               (recognized, confidence, system_action, created_at)
+               VALUES (0, 0.0, 'old', '2000-01-01T00:00:00+00:00')"""
+        )
+    database.log_event(recognized=False, confidence=0.0, system_action="new")
+
+    removed = database.purge_old_events(ttl_days=30, max_rows=0)
+    assert removed >= 1
+    remaining = [e["system_action"] for e in database.list_events(limit=100)]
+    assert "old" not in remaining
+    assert "new" in remaining
+
+
+def test_purge_max_rows_cap(client):
+    import database
+
+    for i in range(5):
+        database.log_event(recognized=False, confidence=0.0, system_action=f"e{i}")
+    database.purge_old_events(ttl_days=0, max_rows=3)
+    assert len(database.list_events(limit=100)) <= 3
+
+
+def test_delete_reference_nulls_event_link(client, monkeypatch):
+    import database
+
+    fake = [{"faceRectangle": {"top": 1, "left": 2, "width": 3, "height": 4},
+             "faceAttributes": {"headPose": {"pitch": 0, "yaw": 0, "roll": 0}}}]
+    monkeypatch.setattr(recognition, "detect_faces", lambda b: fake)
+    monkeypatch.setattr(
+        recognition, "verify_against_references",
+        lambda path: (True, 0.91, {"id": 1, "name": "Alice"}),
+    )
+    # Crée une vraie référence puis un événement la référençant.
+    img = base64.b64decode(PIXEL_B64.split(",", 1)[1])
+    ref_id = client.post(
+        "/references",
+        data={"name": "Eve"},
+        files={"file": ("e.jpg", io.BytesIO(img), "image/jpeg")},
+    ).json()["id"]
+    database.log_event(recognized=True, confidence=0.9, reference_id=ref_id, name="Eve")
+
+    assert client.delete(f"/references/{ref_id}").status_code == 200
+    # Aucun événement ne doit encore pointer vers la référence supprimée.
+    with database.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT COUNT(*) AS n FROM recognition_events WHERE reference_id = ?",
+            (ref_id,),
+        ).fetchone()
+    assert rows["n"] == 0
