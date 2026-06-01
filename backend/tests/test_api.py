@@ -110,6 +110,9 @@ def test_rename_reference(client):
     # Renommer une référence inexistante -> 404.
     assert client.patch("/references/999999", json={"name": "X"}).status_code == 404
 
+    # Un nom uniquement composé d'espaces est rejeté (422) après strip.
+    assert client.patch(f"/references/{ref_id}", json={"name": "   "}).status_code == 422
+
 
 def test_reference_image_endpoint(client):
     img = base64.b64decode(PIXEL_B64.split(",", 1)[1])

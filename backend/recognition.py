@@ -29,6 +29,15 @@ except ImportError:  # pragma: no cover
     Image = None
 
 
+def _metric_inc(name: str, value: float = 1.0) -> None:
+    """Incrémente une métrique (best-effort, import paresseux pour éviter un cycle)."""
+    try:
+        import metrics
+        metrics.inc(name, value)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def azure_headers() -> dict:
     return {
         "Ocp-Apim-Subscription-Key": settings.AZURE_FACE_KEY,
@@ -52,6 +61,9 @@ def detect_faces(image_bytes: bytes) -> list[dict]:
     attempts = max(0, settings.AZURE_MAX_RETRIES) + 1
     last_exc: Exception | None = None
     for attempt in range(attempts):
+        # Compté à chaque tentative (retries inclus) pour coller à la sémantique
+        # « appels tentés » de la métrique.
+        _metric_inc("azure_requests_total")
         try:
             response = requests.post(
                 url,
@@ -79,6 +91,7 @@ def detect_faces(image_bytes: bytes) -> list[dict]:
         time.sleep(settings.AZURE_BACKOFF_BASE * (2 ** attempt))
 
     # Toutes les tentatives ont échoué : propage la dernière erreur réseau.
+    _metric_inc("azure_failures_total")
     raise last_exc if last_exc else requests.RequestException("Azure injoignable")
 
 
@@ -99,10 +112,15 @@ def is_clear_for_enrollment(pitch: float, yaw: float, roll: float) -> bool:
 
 
 def _verify_with_timeout(ref_path: str, capture_path: str) -> dict:
-    """Exécute DeepFace.verify avec une borne de temps (évite un hang process).
+    """Exécute DeepFace.verify avec une borne de temps (évite un hang requête).
 
     Lève `concurrent.futures.TimeoutError` si la vérification dépasse
-    `DEEPFACE_TIMEOUT`.
+    `DEEPFACE_TIMEOUT`. NB : un thread déjà démarré ne peut pas être interrompu
+    de force (limite Python) — `future.cancel()` n'annule qu'une tâche encore en
+    file. Le pool est borné (`max_workers`) ; en cas de saturation durable,
+    réduire le nombre de références ou augmenter `DEEPFACE_TIMEOUT`. Une vraie
+    interruption nécessiterait un `ProcessPoolExecutor` killable (compromis :
+    coût de (re)chargement des modèles par process).
     """
     future = _verify_executor.submit(
         DeepFace.verify,
@@ -111,7 +129,12 @@ def _verify_with_timeout(ref_path: str, capture_path: str) -> dict:
         model_name=settings.DEEPFACE_MODEL,
         enforce_detection=False,
     )
-    return future.result(timeout=settings.DEEPFACE_TIMEOUT)
+    try:
+        return future.result(timeout=settings.DEEPFACE_TIMEOUT)
+    except FuturesTimeoutError:
+        # Libère le slot si la tâche n'a pas encore démarré.
+        future.cancel()
+        raise
 
 
 def verify_against_references(capture_path: str) -> tuple[bool, float, dict | None]:
@@ -136,11 +159,7 @@ def verify_against_references(capture_path: str) -> tuple[bool, float, dict | No
         try:
             result = _verify_with_timeout(ref["image_path"], capture_path)
         except FuturesTimeoutError:
-            try:
-                import metrics
-                metrics.inc("deepface_timeouts_total")
-            except Exception:  # noqa: BLE001 — métriques best-effort
-                pass
+            _metric_inc("deepface_timeouts_total")
             logger.error(
                 "DeepFace : délai dépassé (%.1fs) pour la référence %s.",
                 settings.DEEPFACE_TIMEOUT, ref["id"],

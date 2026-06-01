@@ -116,6 +116,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         purge_task.cancel()
+        try:
+            await purge_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Real-time Facial Recognition API", version="2.0.0", lifespan=lifespan)
@@ -273,11 +277,11 @@ async def analyze_face(payload: ImagePayload) -> dict:
 
     image_bytes = _decode_image(payload.image)
 
-    metrics.inc("azure_requests_total")
+    # Les compteurs Azure (tentatives + échec final) sont gérés dans
+    # recognition.detect_faces pour refléter chaque tentative de retry.
     try:
         detected = recognition.detect_faces(image_bytes)
     except requests_exc() as exc:
-        metrics.inc("azure_failures_total")
         raise HTTPException(status_code=502, detail=f"Erreur réseau vers Azure : {exc}")
 
     if not detected:
@@ -406,7 +410,12 @@ async def get_references() -> dict:
 
 @app.patch("/references/{ref_id}", dependencies=[Depends(require_api_key)])
 async def rename_reference(ref_id: int, payload: RenamePayload) -> dict:
-    updated = database.update_reference_name(ref_id, payload.name.strip())
+    # `min_length` Pydantic s'applique avant strip : rejette un nom uniquement
+    # composé d'espaces (ex. "   ") qui deviendrait vide après nettoyage.
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Le nom ne peut pas être vide.")
+    updated = database.update_reference_name(ref_id, name)
     if updated is None:
         raise HTTPException(status_code=404, detail="Référence introuvable.")
     return updated
@@ -417,7 +426,9 @@ async def get_reference_image(ref_id: int) -> FileResponse:
     ref = database.get_reference(ref_id)
     if not ref or not ref.get("image_path") or not os.path.exists(ref["image_path"]):
         raise HTTPException(status_code=404, detail="Image introuvable.")
-    return FileResponse(ref["image_path"], media_type="image/jpeg")
+    # Laisse Starlette déduire le type via l'extension (jpg/png/webp/bmp) plutôt
+    # que forcer image/jpeg : les références manuelles ne sont pas toutes en JPEG.
+    return FileResponse(ref["image_path"])
 
 
 @app.delete("/references/{ref_id}", dependencies=[Depends(require_api_key)])
