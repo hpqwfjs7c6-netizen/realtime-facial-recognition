@@ -5,13 +5,14 @@ import type {
   ReferenceFace,
 } from "./types";
 
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
-// AVERTISSEMENT SÉCURITÉ : toute variable NEXT_PUBLIC_* est embarquée dans le
-// bundle client et donc visible par n'importe quel utilisateur (DevTools).
-// En production, n'utilisez ici qu'une clé à faible privilège — ou laissez vide.
-// Correctif propre prévu (Sprint 4) : proxy côté serveur (route handler Next.js)
-// qui détient la vraie clé et la garde hors du navigateur.
+// Par défaut, les appels passent par le proxy serveur same-origin
+// (`/api/proxy/*`, cf. src/app/api/proxy/[...path]/route.ts) qui injecte la clé
+// API côté serveur (R6) : la vraie clé ne touche jamais le navigateur.
+// Pour cibler directement le backend (dev/legacy), définir NEXT_PUBLIC_BACKEND_URL.
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "/api/proxy";
+// N'est utilisé qu'en mode direct (NEXT_PUBLIC_BACKEND_URL défini). En mode
+// proxy, laisser vide : le serveur ajoute la clé. AVERTISSEMENT : toute variable
+// NEXT_PUBLIC_* est embarquée dans le bundle client (visible en DevTools).
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
 
 const DEFAULT_TIMEOUT_MS = 15000;

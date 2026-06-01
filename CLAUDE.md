@@ -197,7 +197,7 @@ Windows git clones converted `docker-entrypoint.sh` to CRLF, breaking the sheban
 
 Multi-sprint program to harden security, reliability, performance, and
 operability. Executed **sprint-by-sprint with a review pause between each**.
-Status: **Sprint 0 ✅ · Sprint 1 ✅ · Sprint 2 ✅ · Sprint 3 ✅ · Sprint 4 pending.**
+Status: **Sprint 0 ✅ · Sprint 1 ✅ · Sprint 2 ✅ · Sprint 3 ✅ · Sprint 4 ✅ — programme terminé.**
 
 ### Sprint 0 — Diagnostic & Cadrage
 
@@ -340,6 +340,99 @@ mémoïsation `timeAgo`, dimensions d'image non validées, VACUUM SQLite.
 - [x] Health-check périodique + reconnexion auto
 - [x] Tests frontend (Vitest) + intégration CI
 
-### Sprint 4 — à venir
-Observabilité : logs structurés, endpoint `/metrics`, runbook, dashboards,
-proxy serveur côté Next.js pour R6 (clé API hors du navigateur), revue finale.
+### Sprint 4 — Exploitation & Gouvernance (livré)
+
+- **Logs structurés (R13)**: `LOG_FORMAT=json` active `_JsonLogFormatter`
+  (1 ligne JSON/enregistrement : `ts/level/logger/msg/exc`), sinon format texte
+  lisible. Niveau réglable via `LOG_LEVEL`. Setup centralisé dans
+  `_configure_logging()`.
+- **Endpoint `/metrics`**: `backend/metrics.py` (registre in-process sans
+  dépendance) + `MetricsMiddleware` (compte requêtes, 4xx/5xx, latence). Rendu
+  au **format d'exposition Prometheus** (`text/plain`). Compteurs métier :
+  `azure_requests_total`, `azure_failures_total`, `deepface_timeouts_total`,
+  `auto_enrollments_total`, `request_latency_seconds_{sum,count}`.
+- **Proxy serveur Next.js (R6 — corrigé)**: `src/app/api/proxy/[...path]/route.ts`
+  relaie les appels same-origin vers le backend en injectant `x-api-key` **côté
+  serveur** (`API_KEY`/`BACKEND_ORIGIN`, sans `NEXT_PUBLIC_`). La vraie clé ne
+  touche plus le navigateur. `api.ts` cible `/api/proxy` par défaut ; mode direct
+  conservé via `NEXT_PUBLIC_BACKEND_URL` (dev/legacy). Streaming binaire géré
+  (miniatures), en-têtes hop-by-hop filtrés, 502 si backend injoignable.
+- **Tests**: backend `test_metrics_endpoint_exposes_counters`,
+  `test_metrics_count_increases`, `test_json_log_formatter_outputs_json` ;
+  frontend `src/app/api/proxy/route.test.ts` (injection clé serveur + 502).
+
+#### Sprint 4 — Checklist exploitation
+- [x] Logs structurés JSON (LOG_FORMAT/LOG_LEVEL)
+- [x] Endpoint `/metrics` (format Prometheus) + middleware
+- [x] Proxy serveur pour R6 (clé API hors navigateur)
+- [x] Runbook (ci-dessous) + métriques pour dashboards
+- [x] Tests observabilité + proxy
+
+---
+
+## Runbook d'exploitation
+
+### Démarrage
+- **Local backend** : `cd backend && uvicorn main:app --reload` (`:8000`).
+- **Local frontend** : `cd frontend && npm run dev` (`:3000`).
+- **Full stack** : `cp backend/.env.example backend/.env && docker compose up --build`.
+- **Production** : exiger `ENV=production` + `API_KEY` (le backend refuse de
+  démarrer sans clé). Définir `BACKEND_ORIGIN` + `API_KEY` côté Next.js (mode
+  proxy) ; ne pas utiliser `NEXT_PUBLIC_API_KEY`.
+
+### Santé & observabilité
+- **Liveness** : `GET /health` → `azure_configured`, `deepface_available`,
+  nb de références.
+- **Métriques** : `GET /metrics` (Prometheus). Surveiller :
+  `azure_failures_total` (taux d'erreur Azure), `deepface_timeouts_total`
+  (saturation/lenteur), `http_responses_5xx_total`, latence moyenne =
+  `request_latency_seconds_sum / request_latency_seconds_count`.
+- **Logs** : `LOG_FORMAT=json` pour ingestion SIEM/ELK ; PII masquée par défaut
+  (`LOG_MASK_PII=true`).
+
+### Dashboards suggérés (à partir de `/metrics`)
+- **Trafic** : taux `http_requests_total`, répartition 4xx/5xx.
+- **Latence** : moyenne (sum/count), à alerter au-delà d'un seuil (ex. > 2 s).
+- **Dépendances** : ratio `azure_failures_total / azure_requests_total`,
+  `deepface_timeouts_total`.
+- **Métier** : `auto_enrollments_total` (dérive du nb d'auto-enrôlements).
+
+### Incidents fréquents
+- **429 en masse** : `RATE_LIMIT` trop bas → ajuster, ou abus → vérifier les IP.
+- **502 « Erreur réseau vers Azure »** : Azure down/clé invalide → retries déjà
+  en place (`AZURE_MAX_RETRIES`), vérifier `azure_configured` et le quota.
+- **Vérif. qui traîne** : `deepface_timeouts_total` grimpe → augmenter
+  `DEEPFACE_TIMEOUT` ou réduire le nb de références.
+- **Backend hors ligne** : le frontend sonde `/health` toutes les 10 s et se
+  reconnecte automatiquement (notification utilisateur).
+- **Permissions volume Docker** : gérées par `docker-entrypoint.sh` (chown +
+  gosu). Voir « Docker Volume Permission Fix ».
+
+### Sauvegarde / restauration
+- État persistant = SQLite (`backend/data/app.db`) + images de référence
+  (`backend/data/references/`). Sauvegarder le dossier `DATA_DIR`.
+- Rétention historique automatique : `HISTORY_TTL_DAYS` (30 j) +
+  `HISTORY_MAX_ROWS` (10000), purge au démarrage et toutes les 6 h.
+
+### Rollback
+- Revenir au commit/tag précédent et redéployer (images Docker reconstruites).
+- Migrations DB idempotentes et additives (colonnes/index `IF NOT EXISTS`), donc
+  un rollback applicatif ne casse pas un schéma déjà migré.
+
+---
+
+## Revue finale (clôture du programme)
+
+- **Sécurité (Sprint 1)** : rate limiting, PII masquée, deps épinglées, security
+  headers, CORS durci, exposition secret **corrigée** (proxy, Sprint 4).
+- **Fiabilité (Sprint 2)** : retries Azure, timeout DeepFace, purge/index DB,
+  erreur réseau frontend, nettoyage temp robuste.
+- **Perf/UX (Sprint 3)** : clés stables, debounce, mémoïsation, reconnexion auto,
+  tests frontend.
+- **Exploitation (Sprint 4)** : logs structurés, `/metrics`, runbook, proxy R6.
+- **Tests** : backend 28, frontend 6 — verts. CI : backend (pytest) + audit
+  (pip-audit/npm audit) + frontend (lint/test/build).
+- **Risques résiduels / suites possibles** : FK SQLite stricte (reportée, lien
+  mis à NULL au delete) ; métriques sans labels (cardinalité volontairement
+  faible) ; auth utilisateur forte (OAuth/JWT) non couverte — la clé API reste
+  un contrôle d'accès de périmètre, pas une authentification d'utilisateur final.

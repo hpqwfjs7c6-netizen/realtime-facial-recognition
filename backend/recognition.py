@@ -136,6 +136,11 @@ def verify_against_references(capture_path: str) -> tuple[bool, float, dict | No
         try:
             result = _verify_with_timeout(ref["image_path"], capture_path)
         except FuturesTimeoutError:
+            try:
+                import metrics
+                metrics.inc("deepface_timeouts_total")
+            except Exception:  # noqa: BLE001 — métriques best-effort
+                pass
             logger.error(
                 "DeepFace : délai dépassé (%.1fs) pour la référence %s.",
                 settings.DEEPFACE_TIMEOUT, ref["id"],

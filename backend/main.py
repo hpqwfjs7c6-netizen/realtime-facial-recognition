@@ -12,13 +12,14 @@ Endpoints :
 import asyncio
 import base64
 import io
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -27,11 +28,42 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 
 import database
+import metrics
 import recognition
 from actions import trigger_action
 from config import mask_name, settings
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+class _JsonLogFormatter(logging.Formatter):
+    """Formate chaque enregistrement de log en une ligne JSON (ingestion)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def _configure_logging() -> None:
+    handler = logging.StreamHandler()
+    if settings.LOG_FORMAT == "json":
+        handler.setFormatter(_JsonLogFormatter())
+    else:
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(getattr(logging, settings.LOG_LEVEL, logging.INFO))
+
+
+_configure_logging()
 logger = logging.getLogger("recognition.api")
 
 
@@ -106,6 +138,20 @@ async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
     )
 
 
+class MetricsMiddleware(BaseHTTPMiddleware):
+    """Compte les requêtes, les erreurs et la latence (observabilité, R13)."""
+
+    async def dispatch(self, request: Request, call_next):
+        metrics.inc("http_requests_total")
+        with metrics.timer():
+            response = await call_next(request)
+        if response.status_code >= 500:
+            metrics.inc("http_responses_5xx_total")
+        elif response.status_code >= 400:
+            metrics.inc("http_responses_4xx_total")
+        return response
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Ajoute des en-têtes de sécurité à chaque réponse (API uniquement)."""
 
@@ -123,6 +169,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(MetricsMiddleware)
 
 # Applique la limite par défaut à toutes les routes (si RATE_LIMIT défini).
 if _rate_limits:
@@ -170,6 +217,7 @@ def _maybe_auto_enroll(
     image_path = recognition.save_reference_image(image_bytes, rect)
     label = database.next_auto_label()
     ref = database.add_reference(label, image_path, auto=True)
+    metrics.inc("auto_enrollments_total")
     logger.info("Auto-enrôlement : nouvelle référence « %s » (id=%s).", mask_name(label), ref["id"])
     return ref
 
@@ -183,6 +231,12 @@ async def health() -> dict:
         "references": len(database.list_references()),
         "recognition_action": settings.RECOGNITION_ACTION,
     }
+
+
+@app.get("/metrics")
+async def get_metrics() -> PlainTextResponse:
+    """Métriques d'exploitation au format Prometheus (text/plain)."""
+    return PlainTextResponse(metrics.render_prometheus())
 
 
 @app.get("/settings")
@@ -219,9 +273,11 @@ async def analyze_face(payload: ImagePayload) -> dict:
 
     image_bytes = _decode_image(payload.image)
 
+    metrics.inc("azure_requests_total")
     try:
         detected = recognition.detect_faces(image_bytes)
     except requests_exc() as exc:
+        metrics.inc("azure_failures_total")
         raise HTTPException(status_code=502, detail=f"Erreur réseau vers Azure : {exc}")
 
     if not detected:

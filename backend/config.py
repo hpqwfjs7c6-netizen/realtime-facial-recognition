@@ -101,6 +101,9 @@ class Settings:
     # --- Journalisation / conformité ---
     # Masque les noms (PII) dans les logs ; désactiver uniquement en dev.
     LOG_MASK_PII: bool = _get_bool("LOG_MASK_PII", True)
+    # Format des logs : "text" (lisible) ou "json" (structuré, pour ingestion).
+    LOG_FORMAT: str = os.getenv("LOG_FORMAT", "text").lower()
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
     @classmethod
     def azure_configured(cls) -> bool:

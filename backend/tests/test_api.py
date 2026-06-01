@@ -353,6 +353,44 @@ def test_purge_max_rows_cap(client):
     assert len(database.list_events(limit=100)) <= 3
 
 
+def test_metrics_endpoint_exposes_counters(client):
+    # Génère un peu de trafic d'abord.
+    client.get("/health")
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+    body = resp.text
+    assert "http_requests_total" in body
+    assert "# TYPE http_requests_total counter" in body
+    assert "azure_requests_total" in body
+
+
+def test_metrics_count_increases(client):
+    import metrics
+
+    before = metrics.snapshot()["http_requests_total"]
+    client.get("/health")
+    after = metrics.snapshot()["http_requests_total"]
+    assert after > before
+
+
+def test_json_log_formatter_outputs_json():
+    import json
+    import logging
+
+    import main
+
+    rec = logging.LogRecord(
+        name="recognition.api", level=logging.INFO, pathname=__file__,
+        lineno=1, msg="hello %s", args=("world",), exc_info=None,
+    )
+    line = main._JsonLogFormatter().format(rec)
+    parsed = json.loads(line)
+    assert parsed["level"] == "INFO"
+    assert parsed["msg"] == "hello world"
+    assert parsed["logger"] == "recognition.api"
+
+
 def test_delete_reference_nulls_event_link(client, monkeypatch):
     import database
 
