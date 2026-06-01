@@ -12,6 +12,9 @@ os.environ["AZURE_FACE_ENDPOINT"] = "https://example.test"
 os.environ["AZURE_FACE_KEY"] = "test-key"
 os.environ["RECOGNITION_ACTION"] = "log"
 os.environ["API_KEY"] = ""
+# Limitation de débit désactivée pour des tests déterministes (le compteur
+# en mémoire serait partagé entre tests via l'IP « testclient »).
+os.environ["RATE_LIMIT"] = ""
 
 from fastapi.testclient import TestClient  # noqa: E402
 

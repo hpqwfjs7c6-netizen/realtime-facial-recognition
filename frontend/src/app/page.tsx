@@ -163,6 +163,35 @@ function Dashboard() {
     return () => clearInterval(id);
   }, [loadHistory]);
 
+  // Health-check périodique + reconnexion auto (R15) : sonde le backend toutes
+  // les 10 s. Un garde-fou `inFlight` garantit une seule requête en vol (évite
+  // l'empilement si une sonde dépasse l'intervalle).
+  useEffect(() => {
+    let inFlight = false;
+    const id = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
+      const wasOffline = backendOnline === false;
+      try {
+        const h = await api.health();
+        setBackendOnline(true);
+        if (wasOffline) {
+          notify("Backend de nouveau en ligne.", "success");
+          void loadReferences();
+          void loadHistory();
+          if (!h.azure_configured) {
+            notify("Azure Face API non configuré côté backend.", "error");
+          }
+        }
+      } catch {
+        setBackendOnline(false);
+      } finally {
+        inFlight = false;
+      }
+    }, 10000);
+    return () => clearInterval(id);
+  }, [backendOnline, notify, loadReferences, loadHistory]);
+
   const handleVideoLoad = (e: React.SyntheticEvent<HTMLVideoElement>) => {
     const v = e.currentTarget;
     const size = { width: v.videoWidth, height: v.videoHeight };

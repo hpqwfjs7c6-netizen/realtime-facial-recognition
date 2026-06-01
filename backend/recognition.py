@@ -3,6 +3,8 @@ import io
 import logging
 import os
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import requests
 
@@ -10,6 +12,11 @@ from config import settings
 from database import list_references_internal
 
 logger = logging.getLogger("recognition.engine")
+
+# Codes HTTP transitoires sur lesquels une nouvelle tentative a du sens.
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+# Exécuteur dédié pour borner la durée des vérifications DeepFace (R8).
+_verify_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="deepface")
 
 try:
     from deepface import DeepFace
@@ -22,6 +29,15 @@ except ImportError:  # pragma: no cover
     Image = None
 
 
+def _metric_inc(name: str, value: float = 1.0) -> None:
+    """Incrémente une métrique (best-effort, import paresseux pour éviter un cycle)."""
+    try:
+        import metrics
+        metrics.inc(name, value)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def azure_headers() -> dict:
     return {
         "Ocp-Apim-Subscription-Key": settings.AZURE_FACE_KEY,
@@ -30,21 +46,53 @@ def azure_headers() -> dict:
 
 
 def detect_faces(image_bytes: bytes) -> list[dict]:
-    """Appelle Azure Face Detect et retourne la liste des visages (avec headPose)."""
+    """Appelle Azure Face Detect avec retries/backoff sur erreurs transitoires.
+
+    Réessaie sur erreurs réseau (timeout, connexion) et statuts HTTP 429/5xx,
+    avec un backoff exponentiel (`AZURE_BACKOFF_BASE * 2**tentative`). Les erreurs
+    4xx non transitoires (hors 429) sont propagées immédiatement.
+    """
     url = (
         f"{settings.AZURE_FACE_ENDPOINT.rstrip('/')}/face/v1.0/detect"
         "?returnFaceId=false&returnFaceLandmarks=false"
         "&returnFaceAttributes=headPose"
         "&detectionModel=detection_03&recognitionModel=recognition_04"
     )
-    response = requests.post(
-        url,
-        headers=azure_headers(),
-        data=image_bytes,
-        timeout=settings.AZURE_TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.json()
+    attempts = max(0, settings.AZURE_MAX_RETRIES) + 1
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        # Compté à chaque tentative (retries inclus) pour coller à la sémantique
+        # « appels tentés » de la métrique.
+        _metric_inc("azure_requests_total")
+        try:
+            response = requests.post(
+                url,
+                headers=azure_headers(),
+                data=image_bytes,
+                timeout=settings.AZURE_TIMEOUT,
+            )
+            if response.status_code in _RETRYABLE_STATUS and attempt < attempts - 1:
+                logger.warning(
+                    "Azure a renvoyé %s (tentative %d/%d), nouvelle tentative…",
+                    response.status_code, attempt + 1, attempts,
+                )
+                last_exc = requests.HTTPError(f"HTTP {response.status_code}")
+            else:
+                response.raise_for_status()
+                return response.json()
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            last_exc = exc
+            if attempt >= attempts - 1:
+                break
+            logger.warning(
+                "Erreur réseau Azure (tentative %d/%d) : %s", attempt + 1, attempts, exc
+            )
+        # Backoff exponentiel avant la prochaine tentative.
+        time.sleep(settings.AZURE_BACKOFF_BASE * (2 ** attempt))
+
+    # Toutes les tentatives ont échoué : propage la dernière erreur réseau.
+    _metric_inc("azure_failures_total")
+    raise last_exc if last_exc else requests.RequestException("Azure injoignable")
 
 
 def is_looking_direct(pitch: float, yaw: float) -> bool:
@@ -61,6 +109,32 @@ def is_clear_for_enrollment(pitch: float, yaw: float, roll: float) -> bool:
         and abs(yaw) <= settings.AUTO_ENROLL_YAW_MAX
         and abs(roll) <= settings.AUTO_ENROLL_ROLL_MAX
     )
+
+
+def _verify_with_timeout(ref_path: str, capture_path: str) -> dict:
+    """Exécute DeepFace.verify avec une borne de temps (évite un hang requête).
+
+    Lève `concurrent.futures.TimeoutError` si la vérification dépasse
+    `DEEPFACE_TIMEOUT`. NB : un thread déjà démarré ne peut pas être interrompu
+    de force (limite Python) — `future.cancel()` n'annule qu'une tâche encore en
+    file. Le pool est borné (`max_workers`) ; en cas de saturation durable,
+    réduire le nombre de références ou augmenter `DEEPFACE_TIMEOUT`. Une vraie
+    interruption nécessiterait un `ProcessPoolExecutor` killable (compromis :
+    coût de (re)chargement des modèles par process).
+    """
+    future = _verify_executor.submit(
+        DeepFace.verify,
+        img1_path=ref_path,
+        img2_path=capture_path,
+        model_name=settings.DEEPFACE_MODEL,
+        enforce_detection=False,
+    )
+    try:
+        return future.result(timeout=settings.DEEPFACE_TIMEOUT)
+    except FuturesTimeoutError:
+        # Libère le slot si la tâche n'a pas encore démarré.
+        future.cancel()
+        raise
 
 
 def verify_against_references(capture_path: str) -> tuple[bool, float, dict | None]:
@@ -83,12 +157,14 @@ def verify_against_references(capture_path: str) -> tuple[bool, float, dict | No
         if not os.path.exists(ref["image_path"]):
             continue
         try:
-            result = DeepFace.verify(
-                img1_path=ref["image_path"],
-                img2_path=capture_path,
-                model_name=settings.DEEPFACE_MODEL,
-                enforce_detection=False,
+            result = _verify_with_timeout(ref["image_path"], capture_path)
+        except FuturesTimeoutError:
+            _metric_inc("deepface_timeouts_total")
+            logger.error(
+                "DeepFace : délai dépassé (%.1fs) pour la référence %s.",
+                settings.DEEPFACE_TIMEOUT, ref["id"],
             )
+            continue
         except Exception as exc:  # noqa: BLE001
             logger.error("Erreur DeepFace pour la référence %s: %s", ref["id"], exc)
             continue
