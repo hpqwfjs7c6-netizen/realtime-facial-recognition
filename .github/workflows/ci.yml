@@ -56,5 +56,7 @@ jobs:
       - run: npm ci
       - name: Lint
         run: npx eslint src
+      - name: Test
+        run: npm test
       - name: Build
         run: npm run build

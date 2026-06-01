@@ -197,7 +197,7 @@ Windows git clones converted `docker-entrypoint.sh` to CRLF, breaking the sheban
 
 Multi-sprint program to harden security, reliability, performance, and
 operability. Executed **sprint-by-sprint with a review pause between each**.
-Status: **Sprint 0 ✅ · Sprint 1 ✅ · Sprint 2 ✅ · Sprints 3–4 pending.**
+Status: **Sprint 0 ✅ · Sprint 1 ✅ · Sprint 2 ✅ · Sprint 3 ✅ · Sprint 4 pending.**
 
 ### Sprint 0 — Diagnostic & Cadrage
 
@@ -313,8 +313,33 @@ mémoïsation `timeAgo`, dimensions d'image non validées, VACUUM SQLite.
 - [x] Nettoyage fichiers temporaires robuste
 - [x] Tests d'échec backend
 
-### Sprints 3–4 — à venir
-Sprint 3 (perf/UX frontend : useCallback, clés de liste, debounce, health-check
-périodique + reconnexion, tests front), Sprint 4 (observabilité : logs
-structurés, endpoint metrics, runbook, dashboards, proxy serveur pour R6,
-revue finale).
+### Sprint 3 — Performance & UX (livré)
+
+- **Clés de liste stables (CameraView)**: les overlays de visages sont désormais
+  keyés par position (`left-top-width-height`) plutôt que par index, évitant les
+  réassociations erronées quand l'ordre des visages change entre frames.
+- **Debounce du curseur (SettingsPanel)**: valeur locale immédiate + remontée
+  débouncée (250 ms) au parent, pour ne plus recréer la boucle de capture à
+  chaque tick du curseur. Resync prop via ajustement d'état pendant le rendu.
+- **Mémoïsation `timeAgo` (HistoryPanel)**: libellés temporels calculés via
+  `useMemo` (recalcul uniquement quand `events` change).
+- **Health-check périodique + reconnexion auto (R15)**: `page.tsx` sonde
+  `/health` toutes les 10 s ; au retour en ligne après coupure, recharge
+  références + historique et notifie l'utilisateur. (`checkHealth`,
+  `loadReferences`, `loadHistory`, `captureAndAnalyze` déjà en `useCallback`.)
+- **Tests frontend (R14 front)**: stack **Vitest + Testing Library + jsdom**
+  (`vitest.config.ts`, `vitest.setup.ts`, script `npm test`). Tests :
+  `src/lib/api.test.ts` (erreur réseau → message clair, extraction `detail`,
+  succès JSON) et `src/components/SettingsPanel.test.tsx` (debounce → un seul
+  appel parent avec la dernière valeur). Étape `Test` ajoutée au job frontend CI.
+
+#### Sprint 3 — Checklist perf/UX
+- [x] Clés de liste stables (CameraView)
+- [x] Debounce du curseur d'intervalle
+- [x] Mémoïsation des libellés temporels
+- [x] Health-check périodique + reconnexion auto
+- [x] Tests frontend (Vitest) + intégration CI
+
+### Sprint 4 — à venir
+Observabilité : logs structurés, endpoint `/metrics`, runbook, dashboards,
+proxy serveur côté Next.js pour R6 (clé API hors du navigateur), revue finale.

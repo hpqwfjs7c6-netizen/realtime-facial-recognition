@@ -163,6 +163,29 @@ function Dashboard() {
     return () => clearInterval(id);
   }, [loadHistory]);
 
+  // Health-check périodique + reconnexion auto (R15) : sonde le backend toutes
+  // les 10 s. Quand il revient en ligne après une coupure, recharge les données.
+  useEffect(() => {
+    const id = setInterval(async () => {
+      const wasOffline = backendOnline === false;
+      try {
+        const h = await api.health();
+        setBackendOnline(true);
+        if (wasOffline) {
+          notify("Backend de nouveau en ligne.", "success");
+          void loadReferences();
+          void loadHistory();
+          if (!h.azure_configured) {
+            notify("Azure Face API non configuré côté backend.", "error");
+          }
+        }
+      } catch {
+        setBackendOnline(false);
+      }
+    }, 10000);
+    return () => clearInterval(id);
+  }, [backendOnline, notify, loadReferences, loadHistory]);
+
   const handleVideoLoad = (e: React.SyntheticEvent<HTMLVideoElement>) => {
     const v = e.currentTarget;
     const size = { width: v.videoWidth, height: v.videoHeight };
