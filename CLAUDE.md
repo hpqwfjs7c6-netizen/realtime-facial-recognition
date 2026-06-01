@@ -190,3 +190,91 @@ Non-root hardening (dropping to `appuser`) prevented writing to volumes owned by
 Windows git clones converted `docker-entrypoint.sh` to CRLF, breaking the shebang.
 - Fix 1: `.gitattributes` forces LF for all `*.sh` files
 - Fix 2: Dockerfile sed clears CRLF as defense-in-depth
+
+---
+
+## Hardening Program (2026-06) — 5-sprint roadmap
+
+Multi-sprint program to harden security, reliability, performance, and
+operability. Executed **sprint-by-sprint with a review pause between each**.
+Status: **Sprint 0 ✅ · Sprint 1 ✅ · Sprints 2–4 pending.**
+
+### Sprint 0 — Diagnostic & Cadrage
+
+Full backend+frontend diagnostic. Risk register below; each risk is mapped to a
+sprint and has acceptance criteria.
+
+#### Risk Register
+
+| ID | Domaine | Risque | Réf | Criticité | Sprint |
+|----|---------|--------|-----|-----------|--------|
+| R1 | Sécurité | Aucun rate limiting (DoS / brute-force API_KEY) | main.py endpoints | Critique | 1 ✅ |
+| R2 | Privacy | Noms (PII) en clair dans les logs | main.py:107, actions.py:25 | Élevée | 1 ✅ |
+| R3 | Sécurité | Dépendances non épinglées (requests, Pillow, deepface, tf-keras, opencv) | requirements.txt | Élevée | 1 ✅ |
+| R4 | Sécurité | Pas de security headers (CSP, X-Frame-Options, HSTS) | main.py | Moyenne | 1 ✅ |
+| R5 | Sécurité | CORS methods/headers en wildcard | main.py | Moyenne | 1 ✅ |
+| R6 | Sécurité | API_KEY exposée dans le bundle client (NEXT_PUBLIC_) | frontend api.ts | Moyenne | 1 ⚠️ documenté |
+| R7 | Fiabilité | Aucun retry/backoff sur Azure Face API | recognition.py | Élevée | 2 |
+| R8 | Fiabilité | DeepFace.verify sans timeout (hang possible) | recognition.py | Élevée | 2 |
+| R9 | Fiabilité | Frontend `.json()` sur erreur réseau → TypeError | api.ts | Moyenne | 2 |
+| R10 | Persistance | Historique sans purge/TTL (croissance illimitée) | database.py | Moyenne | 2 |
+| R11 | Persistance | Aucun index (created_at, reference_id), pas de FK | database.py | Moyenne | 2 |
+| R12 | Fiabilité | Fichiers temporaires non nettoyés sur exception | main.py | Moyenne | 2 |
+| R13 | Observabilité | Logs non structurés, pas de métriques | main.py | Moyenne | 4 |
+| R14 | Tests | Pas de tests d'échec backend ; aucun test frontend | tests/, frontend | Moyenne | 2/3 |
+| R15 | UX | Pas de health-check périodique ni reconnexion auto | page.tsx | Faible | 3 |
+
+Lower-severity items tracked for later sprints: re-renders frontend
+(useCallback), clés de liste par index (CameraView), debounce du slider,
+mémoïsation `timeAgo`, dimensions d'image non validées, VACUUM SQLite.
+
+#### Prioritized Backlog
+- **Sprint 1 (Sécurité)**: R1, R2, R3, R4, R5, R6
+- **Sprint 2 (Fiabilité)**: R7, R8, R9, R10, R11, R12, R14 (backend)
+- **Sprint 3 (Perf/UX)**: R15, frontend re-render/keys/debounce, R14 (frontend)
+- **Sprint 4 (Exploitation)**: R13, metrics endpoint, runbook, dashboards
+
+#### Acceptance Criteria (Sprint 1)
+- Rate limiting: au-delà de la limite, `/analyze-face` (et autres) renvoie 429. *(testé)*
+- PII: aucun nom en clair dans les logs quand `LOG_MASK_PII=true`. *(testé)*
+- Deps: toutes les deps runtime épinglées ; `pip-audit` propre en CI.
+- Headers: réponses portent CSP / X-Frame-Options / X-Content-Type-Options / Referrer-Policy. *(testé)*
+- CORS: methods/headers restreints à une allowlist explicite.
+- Auth: endpoint protégé renvoie 401 sans clé quand `API_KEY` est défini. *(testé)*
+
+### Sprint 1 — Sécurité & Conformité (livré)
+
+- **Rate limiting (R1)**: `slowapi` `Limiter` (clé = IP) + `SlowAPIMiddleware`,
+  limite par défaut configurable `RATE_LIMIT` (défaut `60/minute`, vide =
+  désactivé). Handler 429 dédié (`main._rate_limit_handler`).
+- **PII log masking (R2)**: `config.mask_name()` (1ère lettre + astérisques),
+  appliqué à `actions.py` (visage reconnu) et `main.py` (auto-enrôlement).
+  Réglable via `LOG_MASK_PII` (défaut `true`).
+- **Pinned deps (R3)**: `requirements.txt` épingle requests 2.32.3, Pillow
+  10.4.0, deepface 0.0.93, tf-keras 2.17.0, opencv-python 4.10.0.84,
+  python-multipart 0.0.18, + slowapi 0.1.9.
+- **Security headers (R4)**: `SecurityHeadersMiddleware` ajoute
+  `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`,
+  `Content-Security-Policy: default-src 'none'`, + `Strict-Transport-Security`
+  en production seulement.
+- **CORS hardening (R5)**: methods/headers restreints
+  (`GET/POST/PATCH/DELETE/OPTIONS`, `x-api-key`/`content-type`).
+- **Secret exposure (R6)**: avertissement inline dans `frontend/src/lib/api.ts`
+  (les `NEXT_PUBLIC_*` partent au client) ; correctif proxy serveur prévu Sprint 4.
+- **Tests**: `test_security_headers_present`, `test_requires_api_key`,
+  `test_pii_masking`, `test_rate_limit_enforced` (conftest désactive
+  `RATE_LIMIT` pour des tests déterministes).
+
+#### Sprint 1 — Checklist sécurité
+- [x] Rate limiting par IP (429)
+- [x] PII masquée dans les logs
+- [x] Dépendances épinglées
+- [x] Security headers
+- [x] CORS durci
+- [x] Exposition secret client documentée
+- [x] Tests d'authentification / headers / 429 / masquage
+
+### Sprints 2–4 — à venir
+Voir le backlog. Sprint 2 (fiabilité Azure/DeepFace, persistance, tests d'échec),
+Sprint 3 (perf/UX frontend, tests front), Sprint 4 (observabilité, runbook,
+dashboards, revue finale).

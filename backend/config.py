@@ -82,6 +82,15 @@ class Settings:
     MAX_UPLOAD_BYTES: int = _get_int("MAX_UPLOAD_BYTES", 8 * 1024 * 1024)  # 8 Mio
     HISTORY_LIMIT_MAX: int = _get_int("HISTORY_LIMIT_MAX", 200)
 
+    # --- Limitation de débit (anti-DoS / anti-brute-force) ---
+    # Format slowapi : "<nombre>/<période>" (ex. "60/minute", "5/second").
+    # Vide pour désactiver.
+    RATE_LIMIT: str = os.getenv("RATE_LIMIT", "60/minute")
+
+    # --- Journalisation / conformité ---
+    # Masque les noms (PII) dans les logs ; désactiver uniquement en dev.
+    LOG_MASK_PII: bool = _get_bool("LOG_MASK_PII", True)
+
     @classmethod
     def azure_configured(cls) -> bool:
         return bool(cls.AZURE_FACE_ENDPOINT and cls.AZURE_FACE_KEY)
@@ -89,6 +98,20 @@ class Settings:
     @classmethod
     def is_production(cls) -> bool:
         return cls.ENV in ("production", "prod")
+
+
+def mask_name(name: str | None) -> str:
+    """Masque un nom pour la journalisation (conformité PII).
+
+    Conserve la première lettre et la longueur (ex. « Alice » -> « A**** »),
+    sauf si LOG_MASK_PII est désactivé (renvoie alors le nom en clair).
+    """
+    label = name or "Inconnu"
+    if not settings.LOG_MASK_PII:
+        return label
+    if len(label) <= 1:
+        return "*"
+    return label[0] + "*" * (len(label) - 1)
 
 
 settings = Settings()

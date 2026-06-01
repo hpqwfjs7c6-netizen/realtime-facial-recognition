@@ -7,6 +7,11 @@ import type {
 
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+// AVERTISSEMENT SÉCURITÉ : toute variable NEXT_PUBLIC_* est embarquée dans le
+// bundle client et donc visible par n'importe quel utilisateur (DevTools).
+// En production, n'utilisez ici qu'une clé à faible privilège — ou laissez vide.
+// Correctif propre prévu (Sprint 4) : proxy côté serveur (route handler Next.js)
+// qui détient la vraie clé et la garde hors du navigateur.
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
 
 const DEFAULT_TIMEOUT_MS = 15000;

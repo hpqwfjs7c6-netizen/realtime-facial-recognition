@@ -15,15 +15,20 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+from starlette.middleware.base import BaseHTTPMiddleware
 
 import database
 import recognition
 from actions import trigger_action
-from config import settings
+from config import mask_name, settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("recognition.api")
@@ -62,12 +67,52 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Real-time Facial Recognition API", version="2.0.0", lifespan=lifespan)
 
+# --- Limitation de débit (anti-DoS / anti-brute-force) ---
+# Clé = adresse IP du client. La limite par défaut s'applique à tous les
+# endpoints décorés ; configurable via RATE_LIMIT (vide = désactivé).
+_rate_limits = [settings.RATE_LIMIT] if settings.RATE_LIMIT else []
+limiter = Limiter(key_func=get_remote_address, default_limits=_rate_limits)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Trop de requêtes. Réessayez plus tard."},
+    )
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Ajoute des en-têtes de sécurité à chaque réponse (API uniquement)."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Content-Security-Policy", "default-src 'none'")
+        if settings.is_production():
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=63072000; includeSubDomains"
+            )
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Applique la limite par défaut à toutes les routes (si RATE_LIMIT défini).
+if _rate_limits:
+    app.add_middleware(SlowAPIMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["x-api-key", "content-type"],
 )
 
 
@@ -104,7 +149,7 @@ def _maybe_auto_enroll(
     image_path = recognition.save_reference_image(image_bytes, rect)
     label = database.next_auto_label()
     ref = database.add_reference(label, image_path, auto=True)
-    logger.info("Auto-enrôlement : nouvelle référence « %s » (id=%s).", label, ref["id"])
+    logger.info("Auto-enrôlement : nouvelle référence « %s » (id=%s).", mask_name(label), ref["id"])
     return ref
 
 

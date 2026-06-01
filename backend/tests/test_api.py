@@ -1,5 +1,6 @@
 import base64
 import io
+import logging
 
 import main
 import recognition
@@ -178,3 +179,65 @@ def test_bad_base64(client, monkeypatch):
     monkeypatch.setattr(recognition, "detect_faces", lambda b: fake)
     resp = client.post("/analyze-face", json={"image": "!!!notbase64!!!"})
     assert resp.status_code == 400
+
+
+# --- Sprint 1 — Sécurité & conformité ---
+
+def test_security_headers_present(client):
+    resp = client.get("/health")
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.headers["x-frame-options"] == "DENY"
+    assert resp.headers["referrer-policy"] == "no-referrer"
+    assert "content-security-policy" in resp.headers
+
+
+def test_requires_api_key(client, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "API_KEY", "secret")
+    # Sans en-tête -> 401.
+    assert client.get("/references").status_code == 401
+    # Avec la bonne clé -> 200.
+    assert client.get("/references", headers={"x-api-key": "secret"}).status_code == 200
+
+
+def test_pii_masking(client, monkeypatch, caplog):
+    from config import settings
+
+    monkeypatch.setattr(settings, "LOG_MASK_PII", True)
+    fake = [{"faceRectangle": {"top": 1, "left": 2, "width": 3, "height": 4},
+             "faceAttributes": {"headPose": {"pitch": 0, "yaw": 0, "roll": 0}}}]
+    monkeypatch.setattr(recognition, "detect_faces", lambda b: fake)
+    monkeypatch.setattr(
+        recognition, "verify_against_references",
+        lambda path: (True, 0.91, {"id": 1, "name": "Alice"}),
+    )
+    with caplog.at_level(logging.INFO):
+        client.post("/analyze-face", json={"image": PIXEL_B64})
+    # Le nom en clair ne doit jamais apparaître dans les logs ; sa forme
+    # masquée (première lettre + astérisques) oui.
+    assert "Alice" not in caplog.text
+    assert "A****" in caplog.text
+
+
+def test_rate_limit_enforced():
+    """Le câblage slowapi renvoie bien un 429 au-delà de la limite."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from slowapi import Limiter
+    from slowapi.middleware import SlowAPIMiddleware
+    from slowapi.errors import RateLimitExceeded
+    from slowapi.util import get_remote_address
+
+    app = FastAPI()
+    app.state.limiter = Limiter(key_func=get_remote_address, default_limits=["3/minute"])
+    app.add_exception_handler(RateLimitExceeded, main._rate_limit_handler)
+    app.add_middleware(SlowAPIMiddleware)
+
+    @app.get("/ping")
+    async def ping():
+        return {"ok": True}
+
+    with TestClient(app) as c:
+        statuses = [c.get("/ping").status_code for _ in range(6)]
+    assert 429 in statuses
